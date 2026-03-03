@@ -1,14 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { readFile, readdir } from "fs/promises";
+import { readFile } from "fs/promises";
 import { join } from "path";
 import { getOpenClawHome, getDefaultWorkspaceSync } from "@/lib/paths";
-import { runCli, parseJsonFromCliOutput, gatewayCall } from "@/lib/openclaw";
+import { runCli, parseJsonFromCliOutput } from "@/lib/openclaw";
 import { fetchGatewaySessions, summarizeSessionsByAgent } from "@/lib/gateway-sessions";
 import {
   gatewayCallWithRetry,
   patchConfig as applyConfigPatchWithRetry,
   fetchConfig,
-  extractAgentsList,
   extractBindings,
 } from "@/lib/gateway-config";
 
@@ -286,8 +285,21 @@ async function createAgentViaCli(body: Record<string, unknown>) {
   });
 }
 
+function buildSyntheticMainAgent(
+  defaults: Record<string, unknown>,
+  defaultWorkspace: string,
+): Record<string, unknown> {
+  const synthetic: Record<string, unknown> = { id: "main", default: true };
+  if (defaults.model !== undefined) synthetic.model = defaults.model;
+  if (defaults.workspace !== undefined) synthetic.workspace = defaultWorkspace;
+  if (defaults.identity !== undefined) synthetic.identity = defaults.identity;
+  if (defaults.subagents !== undefined) synthetic.subagents = defaults.subagents;
+  return synthetic;
+}
+
 /**
- * Rich agent discovery — merges CLI data, config, sessions, identity.
+ * Rich agent discovery — configured agents are the source of truth.
+ * Runtime sessions enrich known agents, but do not create new rows.
  */
 export async function GET() {
   try {
@@ -346,6 +358,9 @@ export async function GET() {
       if (rid && !parsedIds.has(rid)) {
         mergedList.push(r);
       }
+    }
+    if (mergedList.length === 0) {
+      mergedList.push(buildSyntheticMainAgent(defaults, defaultWorkspace));
     }
 
     const discoveredDefaultAgentId =
@@ -470,25 +485,12 @@ export async function GET() {
     const agents: AgentFull[] = [];
     const workspaceIdentityCache = new Map<string, string | null>();
 
-    // Determine the set of agent ids to process (from config + sessions + agents dir)
+    // Determine the set of agent ids to process from configured/resolved agent definitions only.
+    // Runtime sessions and stray directories may contain temporary helpers (e.g. tmp-probe)
+    // or foreign agent ids (e.g. Codex), which should not appear in the Agents page.
     const agentIds = new Set<string>();
     for (const cfg of mergedList) {
       if (cfg.id) agentIds.add(cfg.id as string);
-    }
-    for (const sessionAgentId of sessionsByAgent.keys()) {
-      if (sessionAgentId) agentIds.add(sessionAgentId);
-    }
-
-    // Also scan agents directory
-    try {
-      const agentDirs = await readdir(join(OPENCLAW_HOME, "agents"), {
-        withFileTypes: true,
-      });
-      for (const dir of agentDirs) {
-        if (dir.isDirectory()) agentIds.add(dir.name);
-      }
-    } catch {
-      // ok
     }
 
     for (const id of agentIds) {

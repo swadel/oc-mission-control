@@ -74,7 +74,7 @@ const navItems: NavItem[] = [
   { group: "Integrations", section: "skills", label: "Skills", icon: Wrench, href: "/skills" },
   { section: "skills", label: "ClawHub", icon: Package, href: "/skills?tab=clawhub", tab: "clawhub", isSubItem: true },
   { section: "audio", label: "Audio & Voice", icon: Volume2, href: "/audio" },
-  { section: "browser", label: "Browser Relay", icon: Globe, href: "/browser" },
+  ...(!isAgentbayHosting ? [{ section: "browser", label: "Browser Relay", icon: Globe, href: "/browser" } as NavItem] : []),
   { section: "search", label: "Web Search", icon: Search, href: "/search" },
   // ── Configuration ──
   { group: "Configuration", section: "models", label: "Models", icon: Cpu, href: "/models" },

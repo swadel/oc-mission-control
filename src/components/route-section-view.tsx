@@ -119,6 +119,8 @@ const HelpView = dynamic(
   { loading: () => <SectionLoading /> }
 );
 
+const isAgentbayHosting = process.env.NEXT_PUBLIC_AGENTBAY_HOSTED === "true";
+
 export type DashboardSection =
   | "dashboard"
   | "chat"
@@ -151,6 +153,10 @@ export type DashboardSection =
   | "help";
 
 function SectionContent({ section }: { section: DashboardSection }) {
+  if (isAgentbayHosting && section === "browser") {
+    return <DashboardView />;
+  }
+
   switch (section) {
     case "dashboard":
       return <DashboardView />;

@@ -164,7 +164,7 @@ export type DashboardSection =
   | "help";
 
 function SectionContent({ section }: { section: DashboardSection }) {
-  if (isAgentbayHosting && (section === "browser" || section === "tailscale")) {
+  if (isAgentbayHosting && section === "tailscale") {
     return <DashboardView />;
   }
 
@@ -214,7 +214,7 @@ function SectionContent({ section }: { section: DashboardSection }) {
     case "tailscale":
       return <TailscaleView />;
     case "browser":
-      return <BrowserRelayView />;
+      return <BrowserRelayView isHosted={isAgentbayHosting} />;
     case "calendar":
       return <CalendarView />;
     case "search":

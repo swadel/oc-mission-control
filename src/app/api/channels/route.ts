@@ -157,8 +157,9 @@ async function explainUnknownChannelError(
   const plugins = await listPlugins();
   const plugin = findPluginForChannel(plugins, channel);
   if (!plugin) {
+    const docsUrl = `https://docs.openclaw.ai/channels/${encodeURIComponent(channel)}`;
     throw new Error(
-      `Unknown channel "${channel}" in this OpenClaw installation. Check available plugins with "openclaw plugins list" and install/enable the channel plugin, or update OpenClaw.`
+      `Unknown channel "${channel}" in this OpenClaw installation. Telegram and several other channels are built-in — ensure OpenClaw is up to date (openclaw --version) and the gateway is running. Some channels require a plugin; run "openclaw plugins list" to see. See ${docsUrl} for setup.`
     );
   }
   if (!plugin.enabled) {
@@ -549,6 +550,26 @@ export async function POST(request: NextRequest) {
 
     switch (action) {
       case "add": {
+        // Telegram is configured via config (channels.telegram.botToken), not "channels add".
+        // Docs: https://docs.openclaw.ai/channels/telegram — "configure token in config/env, then start gateway".
+        if (channel === "telegram" && body.token) {
+          const telegramPatch: Record<string, unknown> = {
+            enabled: true,
+            botToken: (body.token as string).trim(),
+            dmPolicy: (body.dmPolicy as string) || "pairing",
+          };
+          await patchConfig(
+            { channels: { telegram: telegramPatch } },
+            { restartDelayMs: 2000 },
+          );
+          return NextResponse.json({
+            ok: true,
+            output: "Telegram channel configured. The gateway will pick up the new token after restart.",
+            pluginAutoEnabled: false,
+            restartRecommended: true,
+          });
+        }
+
         const pluginSetup = await ensureChannelPluginReady(channel);
         const args = ["channels", "add", "--channel", channel];
         // Token-based channels

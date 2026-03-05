@@ -6,12 +6,14 @@ import {
   Bot,
   Check,
   ChevronDown,
+  ChevronLeft,
   ExternalLink,
   Eye,
   EyeOff,
   Image as ImageIcon,
   KeyRound,
   ListOrdered,
+  Loader2,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -421,6 +423,12 @@ export function ModelsView() {
   const [connectShowKey, setConnectShowKey] = useState(false);
   const [connectSaving, setConnectSaving] = useState(false);
   const [connectSuccess, setConnectSuccess] = useState<string | null>(null);
+  const [connectPhase, setConnectPhase] = useState<"key" | "configure">("key");
+  const [connectValidatedKey, setConnectValidatedKey] = useState("");
+  const [connectModels, setConnectModels] = useState<{ id: string; name: string }[]>([]);
+  const [connectModelsLoading, setConnectModelsLoading] = useState(false);
+  const [connectSelectedModel, setConnectSelectedModel] = useState("");
+  const [connectSelectedAgent, setConnectSelectedAgent] = useState("");
 
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const providerAccessRef = useRef<HTMLElement>(null);
@@ -728,15 +736,15 @@ export function ModelsView() {
     gwStatus.status,
   ]);
 
-  const handleConnectProvider = useCallback(async () => {
+  // Phase 1: Validate key and fetch models, then transition to configure phase
+  const handleValidateKey = useCallback(async () => {
     if (!connectProvider) return;
     const isCustom = connectProvider === "custom";
-    // Standard providers require a key; custom requires a base URL
     if (!isCustom && !connectKey.trim()) return;
     if (isCustom && !connectBaseUrl.trim()) return;
     setConnectSaving(true);
     try {
-      // Step 1: Validate the key/endpoint before saving
+      // Validate the key/endpoint
       const testRes = await fetch("/api/onboard", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -749,10 +757,56 @@ export function ModelsView() {
       const testData = await testRes.json().catch(() => ({ ok: false, error: `Validation request failed (${testRes.status})` }));
       if (!testData.ok) {
         flash(testData.error || "API key validation failed — check the key and try again.", "error");
+        setConnectSaving(false);
         return;
       }
 
-      // Step 2: Key is valid — save it
+      // Key is valid — store it and fetch available models
+      setConnectValidatedKey(connectKey.trim());
+      setConnectModelsLoading(true);
+      setConnectPhase("configure");
+      setConnectSaving(false);
+
+      // Fetch models in the background (non-blocking transition)
+      try {
+        const modelsRes = await fetch("/api/onboard", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            isCustom
+              ? { action: "list-models", provider: "custom", baseUrl: connectBaseUrl.trim(), token: connectKey.trim() || "" }
+              : { action: "list-models", provider: connectProvider, token: connectKey.trim() },
+          ),
+        });
+        const modelsData = await modelsRes.json().catch(() => ({ ok: false }));
+        if (modelsData.ok && Array.isArray(modelsData.models)) {
+          const fetched = modelsData.models as { id: string; name: string }[];
+          setConnectModels(fetched);
+          // Pre-select provider default or first model
+          const defaultModel = PROVIDER_DEFAULT_MODEL[connectProvider];
+          if (defaultModel && fetched.some((m) => m.id === defaultModel)) {
+            setConnectSelectedModel(defaultModel);
+          } else if (fetched.length > 0) {
+            setConnectSelectedModel(fetched[0].id);
+          }
+        }
+      } catch {
+        // Model fetch failed — graceful degradation, user can still save key only
+      }
+      setConnectModelsLoading(false);
+    } catch {
+      flash("Failed to validate key", "error");
+      setConnectSaving(false);
+    }
+  }, [connectBaseUrl, connectKey, connectProvider, flash]);
+
+  // Phase 2: Save key + model + agent assignment
+  const handleConnectSave = useCallback(async () => {
+    if (!connectProvider) return;
+    const isCustom = connectProvider === "custom";
+    setConnectSaving(true);
+    try {
+      // Step 1: Save the key
       if (isCustom) {
         const res = await fetch("/api/onboard", {
           method: "POST",
@@ -760,74 +814,90 @@ export function ModelsView() {
           body: JSON.stringify({
             action: "save-credentials",
             provider: "custom",
-            apiKey: connectKey.trim() || "",
+            apiKey: connectValidatedKey || "",
             baseUrl: connectBaseUrl.trim(),
           }),
         });
         const data = await res.json().catch(() => ({ ok: false, error: "Server returned an invalid response" }));
-        if (data.ok) {
-          setConnectSuccess("custom");
-          setConnectKey("");
-          setConnectBaseUrl("");
-          setConnectProvider(null);
-          setConnectShowKey(false);
-          flash("Custom endpoint connected!", "success");
-          await fetchSummary();
-          if (allModelsRequested) await fetchAllModels(true);
-          if (detailsRequested) await fetchAdvancedDetails(true);
-          if (auditRequested) await fetchAudit(true);
-          setTimeout(() => setConnectSuccess(null), 3000);
-        } else {
+        if (!data.ok) {
           flash(data.error || "Failed to connect custom endpoint", "error");
+          setConnectSaving(false);
+          return;
         }
       } else {
         try {
           await postModelAction({
             action: "auth-provider",
             provider: connectProvider,
-            token: connectKey.trim(),
+            token: connectValidatedKey,
           });
-
-          setConnectSuccess(connectProvider);
-          setConnectKey("");
-          const savedProvider = connectProvider;
-          setConnectProvider(null);
-          setConnectShowKey(false);
-          const providerLabel =
-            CONNECT_PROVIDER_META[savedProvider]?.label || savedProvider;
-
-          let successMessage = `${providerLabel} connected.`;
-          const defaultModel = PROVIDER_DEFAULT_MODEL[savedProvider];
-          if (defaultModel) {
-            try {
-              await postModelAction({ action: "set-primary", model: defaultModel });
-              successMessage = `${providerLabel} connected. New chats will start with ${getFriendlyModelName(defaultModel)}.`;
-            } catch (err) {
-              successMessage = `${providerLabel} connected. Mission Control could not switch the default chat model automatically, so please choose it below before chatting.`;
-              console.warn("Connected provider but failed to set default model:", err);
-            }
-          }
-
-          flash(successMessage, "success");
-          await fetchSummary();
-          if (allModelsRequested) await fetchAllModels(true);
-          if (detailsRequested) await fetchAdvancedDetails(true);
-          if (auditRequested) await fetchAudit(true);
-          setTimeout(() => setConnectSuccess(null), 3000);
         } catch (err) {
           flash(err instanceof Error ? err.message : "Failed to connect provider", "error");
+          setConnectSaving(false);
+          return;
         }
       }
+
+      // Step 2: Assign model (if one was selected)
+      const providerLabel = CONNECT_PROVIDER_META[connectProvider]?.label || connectProvider;
+      let successMessage = `${providerLabel} connected.`;
+      const selectedModel = connectSelectedModel;
+
+      if (selectedModel) {
+        try {
+          if (connectSelectedAgent) {
+            // Assign to specific agent
+            await postModelAction({
+              action: "set-agent-model",
+              agentId: connectSelectedAgent,
+              model: selectedModel,
+              fallbacks: null,
+            });
+            const agentName = agents.find((a) => a.id === connectSelectedAgent)?.name || connectSelectedAgent;
+            successMessage = `${providerLabel} connected. ${agentName} set to ${getFriendlyModelName(selectedModel)}.`;
+          } else {
+            // Set as primary/default
+            await postModelAction({ action: "set-primary", model: selectedModel });
+            successMessage = `${providerLabel} connected. New chats will start with ${getFriendlyModelName(selectedModel)}.`;
+          }
+        } catch (err) {
+          successMessage = `${providerLabel} connected. Could not assign model automatically — choose it below.`;
+          console.warn("Connected provider but failed to set model:", err);
+        }
+      }
+
+      // Step 3: Clean up and refresh
+      const savedProvider = connectProvider;
+      setConnectSuccess(savedProvider);
+      setConnectKey("");
+      setConnectBaseUrl("");
+      setConnectValidatedKey("");
+      setConnectModels([]);
+      setConnectSelectedModel("");
+      setConnectSelectedAgent("");
+      setConnectPhase("key");
+      setConnectProvider(null);
+      setConnectShowKey(false);
+
+      flash(successMessage, "success");
+      await fetchSummary();
+      if (allModelsRequested) await fetchAllModels(true);
+      if (detailsRequested) await fetchAdvancedDetails(true);
+      if (auditRequested) await fetchAudit(true);
+      setTimeout(() => setConnectSuccess(null), 3000);
     } catch {
       flash("Failed to connect provider", "error");
     }
     setConnectSaving(false);
   }, [
+    agents,
     allModelsRequested,
     auditRequested,
     connectBaseUrl,
-    connectKey,
     connectProvider,
+    connectSelectedAgent,
+    connectSelectedModel,
+    connectValidatedKey,
     detailsRequested,
     fetchAdvancedDetails,
     fetchAllModels,
@@ -845,6 +915,11 @@ export function ModelsView() {
     setConnectKey("");
     setConnectBaseUrl("");
     setConnectShowKey(false);
+    setConnectPhase("key");
+    setConnectValidatedKey("");
+    setConnectModels([]);
+    setConnectSelectedModel("");
+    setConnectSelectedAgent("");
     requestAnimationFrame(() => {
       providerAccessRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
@@ -2130,11 +2205,21 @@ export function ModelsView() {
                           setConnectKey("");
                           setConnectBaseUrl("");
                           setConnectShowKey(false);
+                          setConnectPhase("key");
+                          setConnectValidatedKey("");
+                          setConnectModels([]);
+                          setConnectSelectedModel("");
+                          setConnectSelectedAgent("");
                         } else {
                           setConnectProvider(p);
                           setConnectKey("");
                           setConnectBaseUrl("");
                           setConnectShowKey(false);
+                          setConnectPhase("key");
+                          setConnectValidatedKey("");
+                          setConnectModels([]);
+                          setConnectSelectedModel("");
+                          setConnectSelectedAgent("");
                         }
                       }}
                       className={cn(
@@ -2160,13 +2245,24 @@ export function ModelsView() {
             </div>
           )}
 
-          {/* ── Inline key input ── */}
+          {/* ── Inline connect flow (two-phase) ── */}
           {connectProvider && (() => {
             const meta = CONNECT_PROVIDER_META[connectProvider];
             const isCustom = connectProvider === "custom";
-            const canSubmit = isCustom
+            const canValidate = isCustom
               ? connectBaseUrl.trim().length > 0
               : connectKey.trim().length > 0;
+            const closeConnect = () => {
+              setConnectProvider(null);
+              setConnectKey("");
+              setConnectBaseUrl("");
+              setConnectShowKey(false);
+              setConnectPhase("key");
+              setConnectValidatedKey("");
+              setConnectModels([]);
+              setConnectSelectedModel("");
+              setConnectSelectedAgent("");
+            };
             return (
             <div className="mt-3 rounded-xl border border-[var(--accent-brand-border)] bg-[var(--accent-brand-subtle)] p-4">
               <div className="flex items-center gap-2 mb-3">
@@ -2174,86 +2270,180 @@ export function ModelsView() {
                 <span className="text-xs font-semibold text-foreground">
                   Connect {meta?.label || connectProvider}
                 </span>
+                {connectPhase === "configure" && (
+                  <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+                    Key verified
+                  </span>
+                )}
                 <button
                   type="button"
-                  onClick={() => { setConnectProvider(null); setConnectKey(""); setConnectBaseUrl(""); setConnectShowKey(false); }}
+                  onClick={closeConnect}
                   className="ml-auto rounded p-0.5 text-muted-foreground/40 hover:text-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
               </div>
-              {/* Base URL input for custom providers */}
-              {meta?.needsBaseUrl && (
-                <div className="mb-2">
-                  <label className="mb-1 block text-[11px] font-medium text-muted-foreground/60">
-                    Endpoint URL
-                  </label>
-                  <input
-                    type="text"
-                    value={connectBaseUrl}
-                    onChange={(e) => setConnectBaseUrl(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter" && canSubmit) { e.preventDefault(); handleConnectProvider(); } }}
-                    placeholder={meta.baseUrlPlaceholder || "https://api.example.com/v1"}
-                    aria-label="Endpoint URL"
-                    className="w-full rounded-lg border border-border bg-card px-3 py-2.5 text-xs font-mono text-foreground/90 placeholder:text-muted-foreground/50 focus:border-[var(--accent-brand-border)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-brand-ring)]"
-                    autoFocus
-                  />
-                  <p className="mt-1 text-[10px] text-muted-foreground/40">
-                    Any OpenAI-compatible endpoint (vLLM, Ollama, LM Studio, NVIDIA NIM, etc.)
-                  </p>
-                </div>
-              )}
-              <div className="flex gap-2">
-                <div className="relative flex-1">
+
+              {/* ── Phase 1: Key input ── */}
+              {connectPhase === "key" && (
+                <>
+                  {/* Base URL input for custom providers */}
                   {meta?.needsBaseUrl && (
-                    <label className="mb-1 block text-[11px] font-medium text-muted-foreground/60">
-                      API Key {meta?.keyOptional ? "(optional)" : ""}
-                    </label>
+                    <div className="mb-2">
+                      <label className="mb-1 block text-[11px] font-medium text-muted-foreground/60">
+                        Endpoint URL
+                      </label>
+                      <input
+                        type="text"
+                        value={connectBaseUrl}
+                        onChange={(e) => setConnectBaseUrl(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter" && canValidate) { e.preventDefault(); handleValidateKey(); } }}
+                        placeholder={meta.baseUrlPlaceholder || "https://api.example.com/v1"}
+                        aria-label="Endpoint URL"
+                        className="w-full rounded-lg border border-border bg-card px-3 py-2.5 text-xs font-mono text-foreground/90 placeholder:text-muted-foreground/50 focus:border-[var(--accent-brand-border)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-brand-ring)]"
+                        autoFocus
+                      />
+                      <p className="mt-1 text-[10px] text-muted-foreground/40">
+                        Any OpenAI-compatible endpoint (vLLM, Ollama, LM Studio, NVIDIA NIM, etc.)
+                      </p>
+                    </div>
                   )}
-                  <input
-                    type={connectShowKey ? "text" : "password"}
-                    value={connectKey}
-                    onChange={(e) => setConnectKey(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter" && canSubmit) { e.preventDefault(); handleConnectProvider(); } }}
-                    placeholder={meta?.keyHint || "Paste API key..."}
-                    aria-label={`API Key${meta?.keyOptional ? " (optional)" : ""}`}
-                    className="w-full rounded-lg border border-border bg-card px-3 py-2.5 pr-9 text-xs font-mono text-foreground/90 placeholder:text-muted-foreground/50 focus:border-[var(--accent-brand-border)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-brand-ring)]"
-                    autoFocus={!meta?.needsBaseUrl}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setConnectShowKey(!connectShowKey)}
-                    className="absolute right-2.5 bottom-2.5 text-muted-foreground/40 hover:text-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    {connectShowKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                  </button>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleConnectProvider}
-                  disabled={!canSubmit || connectSaving}
-                  className={cn(
-                    "shrink-0 rounded-lg bg-[var(--accent-brand)] text-[var(--accent-brand-on)] px-4 py-2.5 text-xs font-medium transition-colors hover:opacity-90 disabled:opacity-40",
-                    meta?.needsBaseUrl && "self-end",
-                  )}
-                >
-                  {connectSaving ? <BusyDots /> : "Connect"}
-                </button>
-              </div>
-              <div className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground/50">
-                <KeyRound className="h-2.5 w-2.5" />
-                <span>Stored securely in OpenClaw. Never leaves your machine.</span>
-                {meta?.keyUrl && (
-                  <a
-                    href={meta.keyUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="ml-auto flex items-center gap-0.5 text-[var(--accent-brand-text)] hover:text-[var(--accent-brand)]"
-                  >
-                    Get a key <ExternalLink className="h-2.5 w-2.5" />
-                  </a>
-                )}
-              </div>
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      {meta?.needsBaseUrl && (
+                        <label className="mb-1 block text-[11px] font-medium text-muted-foreground/60">
+                          API Key {meta?.keyOptional ? "(optional)" : ""}
+                        </label>
+                      )}
+                      <input
+                        type={connectShowKey ? "text" : "password"}
+                        value={connectKey}
+                        onChange={(e) => setConnectKey(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter" && canValidate) { e.preventDefault(); handleValidateKey(); } }}
+                        placeholder={meta?.keyHint || "Paste API key..."}
+                        aria-label={`API Key${meta?.keyOptional ? " (optional)" : ""}`}
+                        className="w-full rounded-lg border border-border bg-card px-3 py-2.5 pr-9 text-xs font-mono text-foreground/90 placeholder:text-muted-foreground/50 focus:border-[var(--accent-brand-border)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-brand-ring)]"
+                        autoFocus={!meta?.needsBaseUrl}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setConnectShowKey(!connectShowKey)}
+                        className="absolute right-2.5 bottom-2.5 text-muted-foreground/40 hover:text-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        {connectShowKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleValidateKey}
+                      disabled={!canValidate || connectSaving}
+                      className={cn(
+                        "shrink-0 rounded-lg bg-[var(--accent-brand)] text-[var(--accent-brand-on)] px-4 py-2.5 text-xs font-medium transition-colors hover:opacity-90 disabled:opacity-40",
+                        meta?.needsBaseUrl && "self-end",
+                      )}
+                    >
+                      {connectSaving ? <BusyDots /> : "Validate & Continue"}
+                    </button>
+                  </div>
+                  <div className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground/50">
+                    <KeyRound className="h-2.5 w-2.5" />
+                    <span>Stored securely in OpenClaw. Never leaves your machine.</span>
+                    {meta?.keyUrl && (
+                      <a
+                        href={meta.keyUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="ml-auto flex items-center gap-0.5 text-[var(--accent-brand-text)] hover:text-[var(--accent-brand)]"
+                      >
+                        Get a key <ExternalLink className="h-2.5 w-2.5" />
+                      </a>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {/* ── Phase 2: Model + Agent selection ── */}
+              {connectPhase === "configure" && (
+                <>
+                  <div className="space-y-3">
+                    {/* Model dropdown */}
+                    <div>
+                      <label className="mb-1 block text-[11px] font-medium text-muted-foreground/60">
+                        Model
+                      </label>
+                      {connectModelsLoading ? (
+                        <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2.5 text-xs text-muted-foreground">
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                          Loading available models…
+                        </div>
+                      ) : connectModels.length > 0 ? (
+                        <select
+                          value={connectSelectedModel}
+                          onChange={(e) => setConnectSelectedModel(e.target.value)}
+                          className="w-full rounded-lg border border-border bg-card px-3 py-2.5 text-xs text-foreground/90 focus:border-[var(--accent-brand-border)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-brand-ring)]"
+                        >
+                          {connectModels.map((m) => (
+                            <option key={m.id} value={m.id}>
+                              {m.name || m.id}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <div className="rounded-lg border border-border bg-card px-3 py-2.5 text-xs text-muted-foreground/60">
+                          Could not load models — the key will still be saved
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Agent dropdown */}
+                    {connectModels.length > 0 && (
+                      <div>
+                        <label className="mb-1 block text-[11px] font-medium text-muted-foreground/60">
+                          Assign to
+                        </label>
+                        <select
+                          value={connectSelectedAgent}
+                          onChange={(e) => setConnectSelectedAgent(e.target.value)}
+                          className="w-full rounded-lg border border-border bg-card px-3 py-2.5 text-xs text-foreground/90 focus:border-[var(--accent-brand-border)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-brand-ring)]"
+                        >
+                          <option value="">All agents (default)</option>
+                          {agents.map((a) => (
+                            <option key={a.id} value={a.id}>
+                              {a.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Actions */}
+                  <div className="mt-3 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setConnectPhase("key");
+                        setConnectModels([]);
+                        setConnectSelectedModel("");
+                        setConnectSelectedAgent("");
+                        setConnectValidatedKey("");
+                      }}
+                      className="flex items-center gap-1 text-xs text-muted-foreground/60 hover:text-foreground/80 transition-colors"
+                    >
+                      <ChevronLeft className="h-3 w-3" />
+                      Change key
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleConnectSave}
+                      disabled={connectSaving}
+                      className="ml-auto shrink-0 rounded-lg bg-[var(--accent-brand)] text-[var(--accent-brand-on)] px-4 py-2.5 text-xs font-medium transition-colors hover:opacity-90 disabled:opacity-40"
+                    >
+                      {connectSaving ? <BusyDots /> : "Connect"}
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
             );
           })()}

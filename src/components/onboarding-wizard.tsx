@@ -1086,6 +1086,9 @@ export function OnboardingWizard({ onComplete }: { onComplete?: () => void }) {
                     <p className="mt-1 text-xs text-muted-foreground">
                       Connect a channel so your agent can chat. You can skip this for now.
                     </p>
+                    <p className="mt-1.5 text-xs text-muted-foreground/80">
+                      Telegram and Discord are built-in. If setup fails, ensure OpenClaw is up to date and the gateway is running; see the Channels docs for your channel.
+                    </p>
                   </div>
 
                   <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">

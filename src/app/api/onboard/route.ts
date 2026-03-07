@@ -17,7 +17,7 @@ import { access, readFile, writeFile, mkdir } from "fs/promises";
 import { join, dirname } from "path";
 import { gatewayCall, runCli } from "@/lib/openclaw";
 import { patchConfig } from "@/lib/gateway-config";
-import { getOpenClawBin, getOpenClawHome, getGatewayUrl } from "@/lib/paths";
+import { getOpenClawBin, getOpenClawHome, getDefaultWorkspace, getGatewayUrl } from "@/lib/paths";
 import {
   buildProviderCredentialPatch,
   fetchModelsFromProvider,
@@ -640,6 +640,60 @@ export async function POST(request: NextRequest) {
           }
         } else {
           steps.push("Gateway running");
+        }
+
+        // 5. Scaffold workspace with foundational files if it doesn't exist yet
+        try {
+          const workspace = await getDefaultWorkspace();
+          await mkdir(join(workspace, "memory"), { recursive: true });
+
+          const foundationalFiles: { name: string; content: string }[] = [
+            {
+              name: "SOUL.md",
+              content:
+                "# Soul\n\nDefine your agent's core personality, values, and communication style here.\n",
+            },
+            {
+              name: "IDENTITY.md",
+              content:
+                "# Identity\n\nDescribe who your agent is — its name, role, and purpose.\n",
+            },
+            {
+              name: "USER.md",
+              content:
+                "# User\n\nInformation about the user this agent serves — preferences, context, and goals.\n",
+            },
+            {
+              name: "AGENTS.md",
+              content:
+                "# Agents\n\nDocument the agents in your workspace and their responsibilities.\n",
+            },
+            {
+              name: "TOOLS.md",
+              content:
+                "# Tools\n\nList the tools and capabilities available to your agent.\n",
+            },
+            {
+              name: "MEMORY.md",
+              content:
+                "# Memory\n\nLong-term memory and important facts your agent should remember.\n",
+            },
+          ];
+
+          let created = 0;
+          for (const file of foundationalFiles) {
+            const filePath = join(workspace, file.name);
+            const exists = await fileExists(filePath);
+            if (!exists) {
+              await writeFile(filePath, file.content, "utf-8");
+              created++;
+            }
+          }
+          if (created > 0) {
+            steps.push(`Workspace scaffolded (${created} files created)`);
+          }
+        } catch (err) {
+          steps.push(`Warning: could not scaffold workspace: ${err}`);
         }
 
         return NextResponse.json({

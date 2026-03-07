@@ -71,6 +71,8 @@ export function resetOnboardingSkip() {
   }
 }
 
+let fetchInFlight: Promise<void> | null = null;
+
 export function SetupGate({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<SetupStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -85,19 +87,35 @@ export function SetupGate({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    setLoading(true);
-    try {
-      const res = await fetch("/api/onboard", { cache: "no-store" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as SetupStatus;
-      cachedStatus = { data, ts: Date.now() };
-      setStatus(data);
-      setError(false);
-    } catch {
-      setError(true);
-    } finally {
-      setLoading(false);
+    // Deduplicate in-flight requests
+    if (fetchInFlight) {
+      await fetchInFlight;
+      if (cachedStatus) {
+        setStatus(cachedStatus.data);
+        setLoading(false);
+        setError(false);
+      }
+      return;
     }
+
+    setLoading(true);
+    const request = (async () => {
+      try {
+        const res = await fetch("/api/onboard", { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as SetupStatus;
+        cachedStatus = { data, ts: Date.now() };
+        setStatus(data);
+        setError(false);
+      } catch {
+        setError(true);
+      } finally {
+        setLoading(false);
+        fetchInFlight = null;
+      }
+    })();
+    fetchInFlight = request;
+    await request;
   }, []);
 
   useEffect(() => {

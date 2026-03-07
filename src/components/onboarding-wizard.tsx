@@ -354,7 +354,6 @@ export function OnboardingWizard({ onComplete }: { onComplete?: () => void }) {
   const [apiKey, setApiKey] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [model, setModel] = useState(PROVIDERS[0].defaultModel);
-  const customBaseUrl = "";
   const [testingKey, setTestingKey] = useState(false);
   const [keyValid, setKeyValid] = useState<boolean | null>(null);
   const [keyError, setKeyError] = useState<string | null>(null);
@@ -522,7 +521,9 @@ export function OnboardingWizard({ onComplete }: { onComplete?: () => void }) {
     };
 
     poll();
-    pairingPollRef.current = setInterval(poll, 4000);
+    pairingPollRef.current = setInterval(() => {
+      if (document.visibilityState === "visible") void poll();
+    }, 4000);
 
     return () => {
       if (pairingPollRef.current) clearInterval(pairingPollRef.current);
@@ -733,6 +734,7 @@ export function OnboardingWizard({ onComplete }: { onComplete?: () => void }) {
     setConnectedChannel(null);
     setSelectedChannel(null);
     setChannelToken("");
+    setChannelAppToken("");
     setChannelResult(null);
     setPairingRequests([]);
     setApprovedCodes(new Set());
@@ -1052,9 +1054,24 @@ export function OnboardingWizard({ onComplete }: { onComplete?: () => void }) {
                           setQrChannel("whatsapp");
                           setShowQrModal(true);
                         }}
-                        className="rounded-full bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
+                        disabled={channelBusy}
+                        className={cn(
+                          "rounded-full px-5 py-2.5 text-sm font-medium transition-opacity",
+                          channelBusy
+                            ? "cursor-not-allowed bg-muted text-muted-foreground"
+                            : "bg-primary text-primary-foreground hover:opacity-90",
+                        )}
                       >
-                        Scan QR Code
+                        {channelBusy ? (
+                          <span className="flex items-center gap-1.5">
+                            <TypingDots size="sm" className="text-current" />
+                            <span>
+                              {connectPhase === "saving" ? "Saving config..." :
+                               connectPhase === "restarting" ? `Starting gateway${healthProgress > 0 ? ` (${healthProgress}%)` : ""}...` :
+                               "Connecting..."}
+                            </span>
+                          </span>
+                        ) : "Scan QR Code"}
                       </button>
                       {currentChannel.docsUrl && (
                         <a

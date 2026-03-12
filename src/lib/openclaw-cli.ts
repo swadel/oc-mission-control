@@ -4,8 +4,31 @@ import { getOpenClawBin } from "./paths";
 
 const exec = promisify(execFile);
 
-/** Env vars for all CLI subprocesses. Mission Control is always a trusted local process. */
-const CLI_ENV = { ...process.env, NO_COLOR: "1", OPENCLAW_ALLOW_INSECURE_PRIVATE_WS: "1" };
+/**
+ * Env vars for all CLI subprocesses.
+ *
+ * Important: we deliberately strip NODE_OPTIONS inherited from Next.js dev
+ * (it can inject require hooks that interfere with child Node CLIs).
+ */
+const { NODE_OPTIONS: _IGNORED_NODE_OPTIONS, ...BASE_ENV } = process.env;
+const CLI_ENV = { ...BASE_ENV, NO_COLOR: "1", OPENCLAW_ALLOW_INSECURE_PRIVATE_WS: "1" };
+
+/**
+ * Windows-friendly launcher support.
+ *
+ * If OPENCLAW_ENTRY is set, we assume OPENCLAW_BIN points to a Node executable
+ * and we invoke: `node <OPENCLAW_ENTRY> ...args`.
+ *
+ * This avoids relying on `openclaw.cmd` (which can fail with spawn/execFile).
+ */
+async function resolveOpenClawCommand(args: string[]): Promise<{ bin: string; args: string[] }> {
+  const bin = await getOpenClawBin();
+  const entry = process.env.OPENCLAW_ENTRY;
+  if (entry && entry.trim()) {
+    return { bin, args: [entry.trim(), ...args] };
+  }
+  return { bin, args };
+}
 
 // ── Concurrency semaphore ──────────────────────────────────────────────────
 // Caps the number of simultaneously live CLI subprocesses. Callers that
@@ -51,9 +74,9 @@ export async function runCliCaptureBoth(
 ): Promise<RunCliResult> {
   await acquireCliSlot();
   try {
-    const bin = await getOpenClawBin();
+    const cmd = await resolveOpenClawCommand(args);
     return await new Promise((resolve, reject) => {
-      const child = spawn(bin, args, {
+      const child = spawn(cmd.bin, cmd.args, {
         env: CLI_ENV,
         timeout,
         stdio: ["ignore", "pipe", "pipe"],
@@ -87,11 +110,11 @@ export async function runCli(
 ): Promise<string> {
   await acquireCliSlot();
   try {
-    const bin = await getOpenClawBin();
+    const cmd = await resolveOpenClawCommand(args);
     if (stdin !== undefined) {
       // Use spawn for stdin piping
       return await new Promise((resolve, reject) => {
-        const child = spawn(bin, args, {
+        const child = spawn(cmd.bin, cmd.args, {
           env: CLI_ENV,
           timeout,
           stdio: ["pipe", "pipe", "pipe"],
@@ -109,7 +132,7 @@ export async function runCli(
         child.stdin.end();
       });
     }
-    const { stdout } = await exec(bin, args, {
+    const { stdout } = await exec(cmd.bin, cmd.args, {
       timeout,
       env: CLI_ENV,
     });

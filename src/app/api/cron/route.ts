@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { gatewayCall } from "@/lib/openclaw";
+import { gatewayCall, runCliJson } from "@/lib/openclaw";
 
 export const dynamic = "force-dynamic";
 
@@ -294,7 +294,8 @@ function normalizeAtTime(value: string): string {
 }
 
 async function listCronJobs(): Promise<CronList> {
-  return gatewayCall<CronList>("cron.list", {}, 10000);
+  // Prefer the local CLI cron store on Windows (fast + avoids gateway websocket timeouts)
+  return runCliJson<CronList>(["cron", "list"], 15000);
 }
 
 function isSystemManagedCronJob(job: CronJob): boolean {
